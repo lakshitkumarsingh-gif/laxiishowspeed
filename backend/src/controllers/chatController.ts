@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { Anthropic } from '@anthropic-ai/sdk';
-import { OpenAI } from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import logger from '../utils/logger';
 
 const prisma = new PrismaClient();
@@ -10,8 +10,31 @@ interface AuthRequest extends Request {
   user?: any;
 }
 
-const claudeClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Initialize AI clients
+let claudeClient: Anthropic | null = null;
+let openaiClient: OpenAI | null = null;
+
+try {
+  if (process.env.ANTHROPIC_API_KEY) {
+    claudeClient = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+    logger.info('✅ Anthropic Claude client initialized');
+  } else {
+    logger.warn('⚠️  ANTHROPIC_API_KEY not set');
+  }
+
+  if (process.env.OPENAI_API_KEY) {
+    openaiClient = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    logger.info('✅ OpenAI client initialized');
+  } else {
+    logger.warn('⚠️  OPENAI_API_KEY not set');
+  }
+} catch (error: any) {
+  logger.error('Error initializing AI clients:', error.message);
+}
 
 // Get conversations
 export const getConversations = async (req: AuthRequest, res: Response) => {
@@ -28,8 +51,8 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
     });
 
     res.json(conversations);
-  } catch (error) {
-    logger.error('Get conversations error:', error);
+  } catch (error: any) {
+    logger.error('Get conversations error:', error.message);
     res.status(500).json({ error: 'Failed to get conversations' });
   }
 };
@@ -48,8 +71,8 @@ export const createConversation = async (req: AuthRequest, res: Response) => {
     });
 
     res.status(201).json(conversation);
-  } catch (error) {
-    logger.error('Create conversation error:', error);
+  } catch (error: any) {
+    logger.error('Create conversation error:', error.message);
     res.status(500).json({ error: 'Failed to create conversation' });
   }
 };
@@ -73,19 +96,19 @@ export const getConversation = async (req: AuthRequest, res: Response) => {
     }
 
     res.json(conversation);
-  } catch (error) {
-    logger.error('Get conversation error:', error);
+  } catch (error: any) {
+    logger.error('Get conversation error:', error.message);
     res.status(500).json({ error: 'Failed to get conversation' });
   }
 };
 
-// Send message
+// Send message and get AI response
 export const sendMessage = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { content } = req.body;
 
-    if (!content) {
+    if (!content || !content.trim()) {
       return res.status(400).json({ error: 'Content is required' });
     }
 
@@ -114,26 +137,39 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     // Get user memories for context
     const memories = await prisma.memory.findMany({
       where: { userId: req.user.userId },
-      orderBy: { importance: 'desc' }
+      orderBy: { importance: 'desc' },
+      take: 10 // Limit to top 10 memories
     });
 
     // Build system prompt with memories
     const memoryContext = memories.length > 0 
-      ? `\n\nAbout the user (importance ranked):\n${memories.map((m, i) => `${i + 1}. [${m.type}] ${m.content} (Importance: ${m.importance}/10)`).join('\n')}`
+      ? `\n\n📚 **What I know about the student (ranked by importance):**\n${memories.map((m, i) => `${i + 1}. [${m.type}] ${m.content} (Importance: ${m.importance}/10)`).join('\n')}`
       : '';
 
-    const systemPrompt = `You are Lumen, a personal AI tutor. You remember everything about how the user learns and adapt your explanations accordingly.
+    const systemPrompt = `You are **Lumen**, a world-class AI tutor with an exceptional ability to explain concepts. Your core mission:
 
-Your teaching approach:
-- Provide structured explanations with tables and organized breakdowns
-- Use step-by-step guidance through complex ideas
-- Include analogies and examples that make concepts click
-- Go deeper when something sparks curiosity
-- Use Socratic questioning to help discovery
+🎯 **Your Teaching Philosophy:**
+- Adapt every explanation to how THIS SPECIFIC STUDENT learns best
+- Use structured explanations with tables, breakdowns, and organization
+- Provide step-by-step guidance that builds understanding progressively  
+- Create analogies and examples that make concepts "click"
+- Ask Socratic questions to guide discovery when appropriate
+- Go deeper into topics when curiosity is sparked
+- Remember what works for this student and use it again
 
-Remember: You learn about the user over time and personalize everything to their style.${memoryContext}`;
+💡 **Your Approach:**
+- Structured explanations with tables and organized breakdowns
+- Step-by-step guidance through complex ideas
+- Analogies and examples that make concepts click
+- Going deeper when something sparks curiosity
+- Using Socratic questioning to help discovery
+- Being encouraging and celebrating progress
 
-    // Build conversation history for context
+📌 **IMPORTANT**: You learn about the student over time and personalize everything to their style.${memoryContext}
+
+⚡ **Respond with clarity and engagement. Make learning fun and effective.**`;
+
+    // Build conversation history
     const messageHistory = conversation.messages.map(m => ({
       role: m.role as 'user' | 'assistant',
       content: m.content
@@ -143,25 +179,42 @@ Remember: You learn about the user over time and personalize everything to their
     const preferredModel = conversation.user.settings?.preferredModel || 'claude';
     let aiMessage = '';
     let tokensUsed = 0;
+    let modelUsed = 'claude';
 
     try {
       if (preferredModel === 'gpt' || preferredModel === 'openai') {
-        // Use OpenAI
+        // Use OpenAI GPT
+        if (!openaiClient) {
+          throw new Error('OpenAI API key not configured');
+        }
+
+        logger.info(`Calling OpenAI GPT for user ${req.user.userId}`);
+
         const response = await openaiClient.chat.completions.create({
-          model: 'gpt-4-turbo',
+          model: 'gpt-4',
           messages: [
             { role: 'system', content: systemPrompt },
             ...messageHistory,
             { role: 'user', content }
           ],
           max_tokens: 2000,
-          temperature: 0.7
+          temperature: 0.7,
+          top_p: 0.95
         });
 
         aiMessage = response.choices[0].message.content || '';
         tokensUsed = response.usage?.total_tokens || 0;
+        modelUsed = 'gpt-4';
+
+        logger.info(`✅ OpenAI response generated (${tokensUsed} tokens)`);
       } else {
         // Use Claude (default)
+        if (!claudeClient) {
+          throw new Error('Anthropic API key not configured');
+        }
+
+        logger.info(`Calling Claude Sonnet for user ${req.user.userId}`);
+
         const response = await claudeClient.messages.create({
           model: 'claude-3-5-sonnet-20241022',
           max_tokens: 2000,
@@ -174,10 +227,13 @@ Remember: You learn about the user over time and personalize everything to their
 
         aiMessage = response.content[0].type === 'text' ? response.content[0].text : '';
         tokensUsed = response.usage?.output_tokens || 0;
+        modelUsed = 'claude-3.5-sonnet';
+
+        logger.info(`✅ Claude response generated (${tokensUsed} tokens)`);
       }
-    } catch (error) {
-      logger.error('AI API error:', error);
-      aiMessage = 'I encountered an issue processing your request. Please try again.';
+    } catch (aiError: any) {
+      logger.error('AI API error:', aiError.message);
+      aiMessage = `I encountered an issue: ${aiError.message}. Please check your API keys and try again.`;
     }
 
     // Save AI response
@@ -186,18 +242,19 @@ Remember: You learn about the user over time and personalize everything to their
         conversationId: id,
         role: 'assistant',
         content: aiMessage,
-        aiModel: preferredModel,
+        aiModel: modelUsed,
         tokensUsed
       }
     });
 
     res.json({
       userMessage,
-      assistantMessage
+      assistantMessage,
+      model: modelUsed
     });
-  } catch (error) {
-    logger.error('Send message error:', error);
-    res.status(500).json({ error: 'Failed to send message' });
+  } catch (error: any) {
+    logger.error('Send message error:', error.message);
+    res.status(500).json({ error: error.message || 'Failed to send message' });
   }
 };
 
@@ -214,8 +271,8 @@ export const deleteConversation = async (req: AuthRequest, res: Response) => {
     await prisma.conversation.delete({ where: { id } });
 
     res.json({ success: true, message: 'Conversation deleted' });
-  } catch (error) {
-    logger.error('Delete conversation error:', error);
+  } catch (error: any) {
+    logger.error('Delete conversation error:', error.message);
     res.status(500).json({ error: 'Failed to delete conversation' });
   }
 };

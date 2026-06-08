@@ -13,11 +13,13 @@ interface GoogleTokenPayload {
   sub: string;
   email: string;
   email_verified: boolean;
-  at_hash: string;
+  at_hash?: string;
   iat: number;
   exp: number;
   picture?: string;
   name?: string;
+  given_name?: string;
+  family_name?: string;
 }
 
 interface AuthRequest extends Request {
@@ -29,12 +31,18 @@ interface AuthRequest extends Request {
 export const verifyGoogleToken = async (token: string): Promise<GoogleTokenPayload> => {
   try {
     const response = await axios.get(
-      `https://oauth2.googleapis.com/tokeninfo?id_token=${token}`
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${token}`,
+      { timeout: 5000 }
     );
-    return response.data;
-  } catch (error) {
-    logger.error('Google token verification failed:', error);
-    throw new Error('Invalid Google token');
+    
+    if (response.data.email_verified === false) {
+      throw new Error('Email not verified');
+    }
+    
+    return response.data as GoogleTokenPayload;
+  } catch (error: any) {
+    logger.error('Google token verification failed:', error.message);
+    throw new Error('Invalid or expired Google token');
   }
 };
 
@@ -42,7 +50,7 @@ export const verifyGoogleToken = async (token: string): Promise<GoogleTokenPaylo
 export const signJWT = (userId: string): string => {
   return jwt.sign(
     { userId },
-    process.env.JWT_SECRET || 'your-secret-key',
+    process.env.JWT_SECRET || 'your-secret-key-change-in-production',
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
 };
@@ -50,7 +58,10 @@ export const signJWT = (userId: string): string => {
 // Verify JWT Middleware
 export const verifyJWT = (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1] || req.cookies.token;
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') 
+      ? authHeader.slice(7) 
+      : req.cookies.token;
     
     if (!token) {
       return res.status(401).json({ error: 'No token provided' });
@@ -58,15 +69,15 @@ export const verifyJWT = (req: AuthRequest, res: Response, next: NextFunction) =
 
     const decoded = jwt.verify(
       token,
-      process.env.JWT_SECRET || 'your-secret-key'
+      process.env.JWT_SECRET || 'your-secret-key-change-in-production'
     ) as any;
     
     req.user = decoded;
     req.token = token;
     next();
-  } catch (error) {
-    logger.error('JWT verification failed:', error);
-    res.status(401).json({ error: 'Invalid token' });
+  } catch (error: any) {
+    logger.error('JWT verification failed:', error.message);
+    res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
 
@@ -79,8 +90,11 @@ export const googleAuthCallback = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'No token provided' });
     }
 
+    logger.info('Processing Google OAuth...');
+
     // Verify Google token
     const googlePayload = await verifyGoogleToken(token);
+    logger.info(`Google auth successful for ${googlePayload.email}`);
 
     // Find or create user
     let user = await prisma.user.findUnique({
@@ -88,24 +102,30 @@ export const googleAuthCallback = async (req: AuthRequest, res: Response) => {
     });
 
     if (!user) {
+      logger.info(`Creating new user: ${googlePayload.email}`);
       user = await prisma.user.create({
         data: {
           email: googlePayload.email,
-          name: googlePayload.name,
+          name: googlePayload.name || `${googlePayload.given_name} ${googlePayload.family_name}`.trim(),
           image: googlePayload.picture,
           googleId: googlePayload.sub,
           theme: 'light',
           preferredModel: 'claude',
+          learningLevel: 'Beginner',
           settings: {
             create: {
               theme: 'light',
               preferredModel: 'claude',
-              learningLevel: 'Beginner'
+              learningLevel: 'Beginner',
+              notificationsEnabled: true,
+              soundEnabled: true
             }
           }
         },
         include: { settings: true }
       });
+    } else {
+      logger.info(`Existing user logged in: ${user.email}`);
     }
 
     // Create JWT
@@ -120,12 +140,13 @@ export const googleAuthCallback = async (req: AuthRequest, res: Response) => {
         name: user.name,
         image: user.image,
         theme: user.theme,
-        preferredModel: user.preferredModel
+        preferredModel: user.preferredModel,
+        learningLevel: user.learningLevel
       }
     });
-  } catch (error) {
-    logger.error('Google auth callback error:', error);
-    res.status(500).json({ error: 'Authentication failed' });
+  } catch (error: any) {
+    logger.error('Google auth callback error:', error.message);
+    res.status(500).json({ error: error.message || 'Authentication failed' });
   }
 };
 
@@ -157,8 +178,8 @@ export const getCurrentUser = async (req: AuthRequest, res: Response) => {
       learningLevel: user.learningLevel,
       settings: user.settings
     });
-  } catch (error) {
-    logger.error('Get current user error:', error);
+  } catch (error: any) {
+    logger.error('Get current user error:', error.message);
     res.status(500).json({ error: 'Failed to get user' });
   }
 };

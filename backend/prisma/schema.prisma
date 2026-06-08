@@ -1,0 +1,170 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  googleId      String?   @unique
+  theme         String    @default("light") // light, dark, rainbow
+  preferredModel String  @default("claude")
+  learningLevel String    @default("Beginner") // Beginner, Intermediate, Advanced
+  learningGoals String?
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // Relations
+  conversations Conversation[]
+  memories      Memory[]
+  documents     Document[]
+  quizzes       Quiz[]
+  subjects      Subject[]
+  settings      Settings?
+  
+  @@index([email])
+  @@index([googleId])
+}
+
+// Settings model
+model Settings {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  theme           String    @default("light")
+  preferredModel  String    @default("claude")
+  learningLevel   String    @default("Beginner")
+  notificationsEnabled Boolean @default(true)
+  soundEnabled    Boolean   @default(true)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([userId])
+}
+
+// Conversation model
+model Conversation {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  subject   String?
+  
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  
+  // Relations
+  messages  Message[]
+  
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Message model
+model Message {
+  id              String    @id @default(cuid())
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role            String    // "user" or "assistant"
+  content         String    @db.Text
+  aiModel         String?   // Which model was used (claude, gpt-4, gpt-3.5)
+  tokensUsed      Int?      // For billing purposes
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([conversationId])
+  @@index([role])
+  @@index([createdAt])
+}
+
+// Memory model - What the AI remembers about the user
+model Memory {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type          String    // "PREFERENCE", "GOAL", "STRENGTH", "WEAKNESS"
+  content       String    @db.Text
+  importance    Int       @default(5) // 1-10 scale
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  @@index([userId])
+  @@index([type])
+  @@index([importance])
+}
+
+// Document model - PDFs and learning materials
+model Document {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  title         String
+  description   String?
+  fileUrl       String
+  fileName      String
+  fileSize      Int
+  pages         Int?
+  summary       String?   @db.Text
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Subject model - Learning subjects and progress
+model Subject {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name          String
+  description   String?
+  progressLevel Int       @default(0) // 0-100
+  masteryLevel  Int       @default(0) // 0-100
+  lastStudied   DateTime?
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  @@index([userId])
+  @@index([progressLevel])
+}
+
+// Quiz model - Auto-generated quizzes
+model Quiz {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  title         String
+  subject       String?
+  questions     Json      // Array of questions
+  answers       Json?     // User answers
+  score         Int?      // 0-100
+  totalQuestions Int
+  correctAnswers Int?
+  
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+  
+  @@index([userId])
+  @@index([completedAt])
+}

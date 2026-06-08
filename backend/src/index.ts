@@ -1,16 +1,29 @@
-import express from 'express';
+import express, { Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import logger from './utils/logger';
+
+// Routes
+import authRoutes from './routes/auth';
+import memoryRoutes from './routes/memory';
+import chatRoutes from './routes/chat';
+import settingsRoutes from './routes/settings';
+import documentRoutes from './routes/documents';
 
 // Load environment variables
 dotenv.config();
 
-const app = express();
+const app: Express = express();
 const PORT = process.env.PORT || 3001;
+
+// Create uploads directory if it doesn't exist
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads', { recursive: true });
+}
 
 // Security middleware
 app.use(helmet());
@@ -21,8 +34,8 @@ app.use(cors({
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100
 });
 app.use('/api/', limiter);
 
@@ -31,23 +44,25 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(cookieParser());
 
-// Health check endpoint
+// Static files
+app.use('/uploads', express.static('uploads'));
+
+// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// API version endpoint
+// API version
 app.get('/api/version', (req, res) => {
   res.json({ version: '1.0.0', name: 'Neural Tutor Hub' });
 });
 
-// TODO: Import and register routes
-// import authRoutes from './routes/auth';
-// import chatRoutes from './routes/chat';
-// import memoryRoutes from './routes/memory';
-// app.use('/api/auth', authRoutes);
-// app.use('/api/chat', chatRoutes);
-// app.use('/api/memory', memoryRoutes);
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/memories', memoryRoutes);
+app.use('/api/conversations', chatRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/documents', documentRoutes);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -58,10 +73,16 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not Found' });
+});
+
 // Start server
 app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
   logger.info(`📚 Neural Tutor Hub Backend v1.0.0`);
+  logger.info(`🔐 CORS enabled for: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
 });
 
 export default app;
